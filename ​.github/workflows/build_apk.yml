@@ -2,7 +2,7 @@ name: Build Flutter APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 jobs:
@@ -13,18 +13,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
-          channel: 'stable'
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
 
-      - name: Create android folder and project files
+      - name: Check project and create Android platform if needed
         run: |
-          if [ ! -d "android" ]; then
-            flutter create --platforms=android .
+          if [ ! -f "pubspec.yaml" ]; then
+            echo "::error::pubspec.yaml is missing from the repository root."
+            exit 1
           fi
 
+          if [ ! -d "android" ] || [ ! -f "android/gradlew" ]; then
+            flutter create --org com.example --project-name profit_guard --platforms=android .
+          fi
+
+      - name: Create application source files
+        run: |
           mkdir -p lib/models lib/screens lib/widgets
 
           cat << 'EOF' > lib/models/payment_item.dart
@@ -1147,13 +1161,20 @@ jobs:
           }
           EOF
 
-      - name: Update Gradle and Android build config
+      - name: Configure Android Gradle versions
         run: |
-          sed -i 's/distributionUrl=.*/distributionUrl=https\\:\\/\\/services.gradle.org\\/distributions\\/gradle-8.7-all.zip/' android/gradle/wrapper/gradle-wrapper.properties
-          if [ -f android/build.gradle ]; then
-            sed -i "s/com.android.tools.build:gradle:[0-9.]*/com.android.tools.build:gradle:8.3.2/" android/build.gradle
+          if [ ! -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo "::error::Gradle wrapper properties file is missing."
+            exit 1
           fi
-          if [ -f android/settings.gradle ]; then
+
+          sed -i 's#^distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.7-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
+
+          if [ -f "android/build.gradle" ]; then
+            sed -i 's/com.android.tools.build:gradle:[0-9.]*/com.android.tools.build:gradle:8.3.2/' android/build.gradle
+          fi
+
+          if [ -f "android/settings.gradle" ]; then
             sed -i 's/id "com.android.application" version "[0-9.]*"/id "com.android.application" version "8.3.2"/' android/settings.gradle
             sed -i 's/id "org.jetbrains.kotlin.android" version "[0-9.]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/' android/settings.gradle
           fi
@@ -1169,3 +1190,4 @@ jobs:
         with:
           name: profit-guard-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
