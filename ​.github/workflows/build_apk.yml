@@ -1,0 +1,1171 @@
+name: Build Flutter APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Create android folder and project files
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create --platforms=android .
+          fi
+
+          mkdir -p lib/models lib/screens lib/widgets
+
+          cat << 'EOF' > lib/models/payment_item.dart
+          class PaymentItem {
+            final String id;
+            final String clientName;
+            final String serviceTitle;
+            final double amount;
+            final String dueDate;
+            final int previousDelays;
+            bool isCollected;
+
+            PaymentItem({
+              required this.id,
+              required this.clientName,
+              required this.serviceTitle,
+              required this.amount,
+              required this.dueDate,
+              required this.previousDelays,
+              this.isCollected = false,
+            });
+
+            String get riskLevel {
+              if (previousDelays == 0) return 'ملتزم';
+              if (previousDelays == 1) return 'تنبيه متوسط';
+              return 'مخاطرة عالية';
+            }
+          }
+          EOF
+
+          cat << 'EOF' > lib/models/subscription_item.dart
+          class SubscriptionItem {
+            final String id;
+            final String serviceName;
+            final int totalQuota;
+            int usedQuota;
+            final String renewalDate;
+            final double monthlyCost;
+
+            SubscriptionItem({
+              required this.id,
+              required this.serviceName,
+              required this.totalQuota,
+              required this.usedQuota,
+              required this.renewalDate,
+              required this.monthlyCost,
+            });
+
+            int get remainingQuota {
+              final diff = totalQuota - usedQuota;
+              return diff < 0 ? 0 : diff;
+            }
+
+            double get usageRatio {
+              if (totalQuota <= 0) return 0.0;
+              return (usedQuota / totalQuota).clamp(0.0, 1.0);
+            }
+          }
+          EOF
+
+          cat << 'EOF' > lib/widgets/summary_card.dart
+          import 'package:flutter/material.dart';
+
+          class SummaryCard extends StatelessWidget {
+            final String title;
+            final String value;
+            final Color backgroundColor;
+            final Color valueColor;
+
+            const SummaryCard({
+              super.key,
+              required this.title,
+              required this.value,
+              required this.backgroundColor,
+              required this.valueColor,
+            });
+
+            @override
+            Widget build(BuildContext context) {
+              return Card(
+                color: backgroundColor,
+                elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        value,
+                        style: TextStyle(
+                          fontSize: 21,
+                          fontWeight: FontWeight.bold,
+                          color: valueColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
+
+          cat << 'EOF' > lib/screens/cashflow_screen.dart
+          import 'package:flutter/material.dart';
+          import '../models/payment_item.dart';
+          import '../widgets/summary_card.dart';
+
+          class CashflowScreen extends StatefulWidget {
+            const CashflowScreen({super.key});
+
+            @override
+            State<CashflowScreen> createState() => _CashflowScreenState();
+          }
+
+          class _CashflowScreenState extends State<CashflowScreen> {
+            double actualCash = 420.0;
+
+            final List<PaymentItem> _payments = [
+              PaymentItem(
+                id: '1',
+                clientName: 'أحمد العلي',
+                serviceTitle: 'دفعة متبقية - تصميم هوية',
+                amount: 150.0,
+                dueDate: '2026-11-22',
+                previousDelays: 0,
+              ),
+              PaymentItem(
+                id: '2',
+                clientName: 'شركة النور',
+                serviceTitle: 'قسط طلبية منتجات',
+                amount: 280.0,
+                dueDate: '2026-11-18',
+                previousDelays: 2,
+              ),
+            ];
+
+            double get pendingCash {
+              return _payments
+                  .where((item) => !item.isCollected)
+                  .fold(0.0, (sum, item) => sum + item.amount);
+            }
+
+            void _collectPayment(PaymentItem item) {
+              if (item.isCollected) return;
+              setState(() {
+                item.isCollected = true;
+                actualCash += item.amount;
+              });
+            }
+
+            void _openAddPaymentDialog() {
+              final clientController = TextEditingController();
+              final titleController = TextEditingController();
+              final amountController = TextEditingController();
+              final dateController = TextEditingController(text: '2026-11-25');
+              int delays = 0;
+
+              showDialog(
+                context: context,
+                builder: (context) {
+                  return StatefulBuilder(
+                    builder: (context, setDialogState) {
+                      return AlertDialog(
+                        title: const Text('إضافة دفعة مجدولة'),
+                        content: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextField(
+                                controller: clientController,
+                                decoration: const InputDecoration(labelText: 'اسم العميل'),
+                              ),
+                              TextField(
+                                controller: titleController,
+                                decoration: const InputDecoration(labelText: 'وصف الخدمة أو الطلب'),
+                              ),
+                              TextField(
+                                controller: amountController,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(labelText: 'المبلغ المستحق'),
+                              ),
+                              TextField(
+                                controller: dateController,
+                                decoration: const InputDecoration(labelText: 'تاريخ الاستحقاق (YYYY-MM-DD)'),
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text('تأخيرات سابقة:'),
+                                  DropdownButton<int>(
+                                    value: delays,
+                                    items: [0, 1, 2, 3]
+                                        .map((d) => DropdownMenuItem(value: d, child: Text('$d')))
+                                        .toList(),
+                                    onChanged: (val) {
+                                      if (val != null) {
+                                        setDialogState(() => delays = val);
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('إلغاء'),
+                          ),
+                          FilledButton(
+                            onPressed: () {
+                              final amount = double.tryParse(amountController.text.trim()) ?? 0;
+                              if (clientController.text.trim().isEmpty || amount <= 0) return;
+
+                              setState(() {
+                                _payments.insert(
+                                  0,
+                                  PaymentItem(
+                                    id: DateTime.now().millisecondsSinceEpoch.toString(),
+                                    clientName: clientController.text.trim(),
+                                    serviceTitle: titleController.text.trim().isEmpty
+                                        ? 'دفعة مجدولة'
+                                        : titleController.text.trim(),
+                                    amount: amount,
+                                    dueDate: dateController.text.trim(),
+                                    previousDelays: delays,
+                                  ),
+                                );
+                              });
+                              Navigator.pop(context);
+                            },
+                            child: const Text('حفظ'),
+                          ),
+                        ],
+                      );
+                    },
+                  );
+                },
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('إدارة الأرباح والدفعات'),
+                  centerTitle: true,
+                ),
+                floatingActionButton: FloatingActionButton.extended(
+                  onPressed: _openAddPaymentDialog,
+                  icon: const Icon(Icons.add),
+                  label: const Text('دفعة مجدولة'),
+                ),
+                body: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SummaryCard(
+                              title: 'الكاش الفعلي الآن',
+                              value: actualCash.toStringAsFixed(2),
+                              backgroundColor: Colors.teal.shade50,
+                              valueColor: Colors.teal.shade800,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: SummaryCard(
+                              title: 'أرباح معلقة (مجدولة)',
+                              value: pendingCash.toStringAsFixed(2),
+                              backgroundColor: Colors.amber.shade50,
+                              valueColor: Colors.orange.shade800,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                      const Text(
+                        'الدفعات المجدولة ورادار الالتزام',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _payments.length,
+                          itemBuilder: (context, index) {
+                            final item = _payments[index];
+                            final isHighRisk = item.previousDelays > 0;
+
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 10),
+                              child: ListTile(
+                                title: Text('${item.clientName} — ${item.amount.toStringAsFixed(2)}'),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('${item.serviceTitle} | الموعد: ${item.dueDate}'),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'الرادار: ${item.riskLevel} (${item.previousDelays} تأخيرات سابقة)',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: isHighRisk ? Colors.red.shade700 : Colors.green.shade700,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                trailing: item.isCollected
+                                    ? const Chip(label: Text('مُحصّل'))
+                                    : FilledButton(
+                                        onPressed: () => _collectPayment(item),
+                                        child: const Text('تحصيل'),
+                                      ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
+
+          cat << 'EOF' > lib/screens/pricing_calculator_screen.dart
+          import 'package:flutter/material.dart';
+          import '../widgets/summary_card.dart';
+
+          class PricingCalculatorScreen extends StatefulWidget {
+            const PricingCalculatorScreen({super.key});
+
+            @override
+            State<PricingCalculatorScreen> createState() => _PricingCalculatorScreenState();
+          }
+
+          class _PricingCalculatorScreenState extends State<PricingCalculatorScreen> {
+            final _costController = TextEditingController(text: '50');
+            final _extraCostController = TextEditingController(text: '10');
+            final _marginController = TextEditingController(text: '30');
+            final _offeredPriceController = TextEditingController(text: '65');
+
+            double _minSafePrice = 60.0;
+            double _suggestedPrice = 78.0;
+            double _expectedProfit = 5.0;
+            bool _isLossWarning = false;
+
+            void _calculatePricing() {
+              final directCost = double.tryParse(_costController.text.trim()) ?? 0.0;
+              final extraCost = double.tryParse(_extraCostController.text.trim()) ?? 0.0;
+              final marginPercent = double.tryParse(_marginController.text.trim()) ?? 0.0;
+              final offeredPrice = double.tryParse(_offeredPriceController.text.trim()) ?? 0.0;
+
+              final totalCost = directCost + extraCost;
+              final safeMargin = marginPercent.clamp(0.0, 95.0);
+              final suggested = totalCost * (1 + (safeMargin / 100));
+              final profitAtOffered = offeredPrice - totalCost;
+
+              setState(() {
+                _minSafePrice = totalCost;
+                _suggestedPrice = suggested;
+                _expectedProfit = profitAtOffered;
+                _isLossWarning = offeredPrice < totalCost;
+              });
+            }
+
+            @override
+            void initState() {
+              super.initState();
+              _calculatePricing();
+            }
+
+            @override
+            void dispose() {
+              _costController.dispose();
+              _extraCostController.dispose();
+              _marginController.dispose();
+              _offeredPriceController.dispose();
+              super.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('حاسبة التسعير ومنع الخسارة'),
+                  centerTitle: true,
+                ),
+                body: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        controller: _costController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'تكلفة الخامات أو الخدمة الأساسية',
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (_) => _calculatePricing(),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _extraCostController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'تكاليف تشغيل إضافية (شحن، أدوات، رسوم)',
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (_) => _calculatePricing(),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _marginController,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'نسبة الربح المطلوبة (%)',
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: (_) => _calculatePricing(),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextField(
+                              controller: _offeredPriceController,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'السعر الذي تفكر بالبيع به',
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: (_) => _calculatePricing(),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SummaryCard(
+                              title: 'الحد الأدنى (منع الخسارة)',
+                              value: _minSafePrice.toStringAsFixed(2),
+                              backgroundColor: Colors.red.shade50,
+                              valueColor: Colors.red.shade800,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: SummaryCard(
+                              title: 'السعر المقترح للبيع',
+                              value: _suggestedPrice.toStringAsFixed(2),
+                              backgroundColor: Colors.teal.shade50,
+                              valueColor: Colors.teal.shade800,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Card(
+                        color: _isLossWarning ? Colors.red.shade100 : Colors.green.shade50,
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _isLossWarning
+                                    ? 'تحذير: هذا السعر أقل من التكلفة وستخسر فعلياً!'
+                                    : 'الربح المتوقع عند السعر المدخل: ${_expectedProfit.toStringAsFixed(2)}',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.bold,
+                                  color: _isLossWarning ? Colors.red.shade900 : Colors.green.shade900,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                _isLossWarning
+                                    ? 'ارفع السعر فوق ${_minSafePrice.toStringAsFixed(2)} لتفادي الخسارة المباشرة.'
+                                    : 'السعر يغطي التكاليف ويوفر هامشاً إيجابياً.',
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
+
+          cat << 'EOF' > lib/screens/subscriptions_summary_screen.dart
+          import 'package:flutter/material.dart';
+          import '../models/subscription_item.dart';
+          import '../widgets/summary_card.dart';
+
+          class SubscriptionsSummaryScreen extends StatefulWidget {
+            const SubscriptionsSummaryScreen({super.key});
+
+            @override
+            State<SubscriptionsSummaryScreen> createState() =>
+                _SubscriptionsSummaryScreenState();
+          }
+
+          class _SubscriptionsSummaryScreenState
+              extends State<SubscriptionsSummaryScreen> {
+            final List<SubscriptionItem> _items = [
+              SubscriptionItem(
+                id: 's1',
+                serviceName: 'باقة أدوات الذكاء الاصطناعي',
+                totalQuota: 100,
+                usedQuota: 82,
+                renewalDate: '2026-12-01',
+                monthlyCost: 20.0,
+              ),
+              SubscriptionItem(
+                id: 's2',
+                serviceName: 'استضافة وخوادم سحابية',
+                totalQuota: 50,
+                usedQuota: 15,
+                renewalDate: '2026-12-10',
+                monthlyCost: 12.0,
+              ),
+            ];
+
+            double get totalMonthlyCost {
+              return _items.fold(0.0, (sum, item) => sum + item.monthlyCost);
+            }
+
+            int get lowQuotaCount {
+              return _items.where((item) => item.remainingQuota <= 15).length;
+            }
+
+            void _consumeOneUnit(SubscriptionItem item) {
+              if (item.usedQuota >= item.totalQuota) return;
+              setState(() {
+                item.usedQuota += 1;
+              });
+            }
+
+            void _openAddSubscriptionDialog() {
+              final nameController = TextEditingController();
+              final quotaController = TextEditingController(text: '50');
+              final costController = TextEditingController(text: '10');
+              final dateController = TextEditingController(text: '2026-12-15');
+
+              showDialog(
+                context: context,
+                builder: (context) {
+                  return AlertDialog(
+                    title: const Text('إضافة اشتراك أو رصيد خدمة'),
+                    content: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextField(
+                            controller: nameController,
+                            decoration: const InputDecoration(labelText: 'اسم الخدمة أو الأداة'),
+                          ),
+                          TextField(
+                            controller: quotaController,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: 'الرصيد / الحصة الكلية'),
+                          ),
+                          TextField(
+                            controller: costController,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: 'التكلفة الشهرية'),
+                          ),
+                          TextField(
+                            controller: dateController,
+                            decoration: const InputDecoration(labelText: 'تاريخ التجديد (YYYY-MM-DD)'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('إلغاء'),
+                      ),
+                      FilledButton(
+                        onPressed: () {
+                          final quota = int.tryParse(quotaController.text.trim()) ?? 0;
+                          final cost = double.tryParse(costController.text.trim()) ?? 0.0;
+                          if (nameController.text.trim().isEmpty || quota <= 0) return;
+
+                          setState(() {
+                            _items.insert(
+                              0,
+                              SubscriptionItem(
+                                id: DateTime.now().millisecondsSinceEpoch.toString(),
+                                serviceName: nameController.text.trim(),
+                                totalQuota: quota,
+                                usedQuota: 0,
+                                renewalDate: dateController.text.trim(),
+                                monthlyCost: cost,
+                              ),
+                            );
+                          });
+                          Navigator.pop(context);
+                        },
+                        child: const Text('حفظ'),
+                      ),
+                    ],
+                  );
+                },
+              );
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('الاشتراكات والرصيد اليومي'),
+                  centerTitle: true,
+                ),
+                floatingActionButton: FloatingActionButton.extended(
+                  onPressed: _openAddSubscriptionDialog,
+                  icon: const Icon(Icons.add),
+                  label: const Text('اشتراك جديد'),
+                ),
+                body: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SummaryCard(
+                              title: 'التزامات شهرية',
+                              value: totalMonthlyCost.toStringAsFixed(2),
+                              backgroundColor: Colors.indigo.shade50,
+                              valueColor: Colors.indigo.shade800,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: SummaryCard(
+                              title: 'رصيد يوشك على النفاد',
+                              value: '$lowQuotaCount خدمات',
+                              backgroundColor: Colors.orange.shade50,
+                              valueColor: Colors.orange.shade800,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Card(
+                        color: Colors.teal.shade50,
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Text(
+                            'ملخص المتابعة اليومية: لديك ${_items.length} اشتراكات نشطة، راقب الرصيد المتبقي قبل التجديد لتفادي الهدر غير المستغل.',
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _items.length,
+                          itemBuilder: (context, index) {
+                            final item = _items[index];
+                            final isLow = item.remainingQuota <= 15;
+
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 10),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          item.serviceName,
+                                          style: const TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        Text(
+                                          'متبقي: ${item.remainingQuota} / ${item.totalQuota}',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: isLow
+                                                ? Colors.red.shade700
+                                                : Colors.teal.shade800,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    LinearProgressIndicator(value: item.usageRatio),
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          'التجديد: ${item.renewalDate} | التكلفة: ${item.monthlyCost.toStringAsFixed(2)}',
+                                          style: const TextStyle(fontSize: 12),
+                                        ),
+                                        OutlinedButton(
+                                          onPressed: () => _consumeOneUnit(item),
+                                          child: const Text('+1 استهلاك'),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
+
+          cat << 'EOF' > lib/screens/developer_admin_screen.dart
+          import 'package:flutter/material.dart';
+          import '../widgets/summary_card.dart';
+
+          class _SentCampaign {
+            final String title;
+            final String segmentLabel;
+            final String message;
+
+            _SentCampaign({
+              required this.title,
+              required this.segmentLabel,
+              required this.message,
+            });
+          }
+
+          class DeveloperAdminScreen extends StatefulWidget {
+            const DeveloperAdminScreen({super.key});
+
+            @override
+            State<DeveloperAdminScreen> createState() => _DeveloperAdminScreenState();
+          }
+
+          class _DeveloperAdminScreenState extends State<DeveloperAdminScreen> {
+            bool _isMaintenanceMode = false;
+
+            final _proPriceController = TextEditingController(text: '9.99');
+            double _currentProPrice = 9.99;
+
+            String _selectedSegment = 'expired';
+            final _titleController = TextEditingController();
+            final _messageController = TextEditingController();
+
+            final Map<String, String> _segments = const {
+              'expired': 'المنتهي اشتراكهم',
+              'free': 'مستخدمو الباقة المجانية',
+              'active_paid': 'المشتركون النشطون',
+              'all': 'جميع المستخدمين',
+            };
+
+            final Map<String, int> _segmentCounts = const {
+              'expired': 18,
+              'free': 64,
+              'active_paid': 29,
+              'all': 111,
+            };
+
+            final List<_SentCampaign> _campaignsHistory = [];
+
+            void _updatePlanPrice() {
+              final parsed = double.tryParse(_proPriceController.text.trim());
+              if (parsed == null || parsed <= 0) return;
+
+              setState(() {
+                _currentProPrice = parsed;
+              });
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('تم تحديث سعر باقة Pro إلى ${_currentProPrice.toStringAsFixed(2)}'),
+                ),
+              );
+            }
+
+            void _sendBulkCampaign() {
+              final title = _titleController.text.trim();
+              final msg = _messageController.text.trim();
+              if (title.isEmpty || msg.isEmpty) return;
+
+              final segmentLabel = _segments[_selectedSegment] ?? 'فئة محددة';
+              final recipients = _segmentCounts[_selectedSegment] ?? 0;
+
+              setState(() {
+                _campaignsHistory.insert(
+                  0,
+                  _SentCampaign(
+                    title: title,
+                    segmentLabel: segmentLabel,
+                    message: msg,
+                  ),
+                );
+                _titleController.clear();
+                _messageController.clear();
+              });
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('تم إرسال الرسالة لفئة ($segmentLabel) إلى $recipients مستخدم'),
+                ),
+              );
+            }
+
+            @override
+            void dispose() {
+              _proPriceController.dispose();
+              _titleController.dispose();
+              _messageController.dispose();
+              super.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final activeSegmentCount = _segmentCounts[_selectedSegment] ?? 0;
+
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('لوحة تحكم المطور'),
+                  centerTitle: true,
+                ),
+                body: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SummaryCard(
+                              title: 'حالة التطبيق',
+                              value: _isMaintenanceMode ? 'صيانة (متوقف)' : 'نشط للمستخدمين',
+                              backgroundColor:
+                                  _isMaintenanceMode ? Colors.red.shade50 : Colors.green.shade50,
+                              valueColor:
+                                  _isMaintenanceMode ? Colors.red.shade800 : Colors.green.shade800,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: SummaryCard(
+                              title: 'سعر باقة Pro',
+                              value: _currentProPrice.toStringAsFixed(2),
+                              backgroundColor: Colors.blue.shade50,
+                              valueColor: Colors.blue.shade800,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Card(
+                        child: SwitchListTile(
+                          title: const Text(
+                            'مفتاح وضع الصيانة (Kill-Switch)',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          subtitle: Text(
+                            _isMaintenanceMode
+                                ? 'التطبيق الآن في وضع الصيانة ويعرض شاشة تنبيه للمستخدمين.'
+                                : 'التطبيق يعمل بشكل طبيعي لجميع المستخدمين.',
+                          ),
+                          value: _isMaintenanceMode,
+                          onChanged: (val) {
+                            setState(() => _isMaintenanceMode = val);
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'إدارة تسعير الباقات',
+                                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _proPriceController,
+                                      keyboardType: TextInputType.number,
+                                      decoration: const InputDecoration(
+                                        labelText: 'سعر الاشتراك الشهري (Pro)',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  FilledButton(
+                                    onPressed: _updatePlanPrice,
+                                    child: const Text('حفظ السعر'),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'رسالة جماعية حسب الفئة',
+                                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 10),
+                              DropdownButtonFormField<String>(
+                                value: _selectedSegment,
+                                decoration: const InputDecoration(
+                                  labelText: 'اختر الفئة المستهدفة',
+                                  border: OutlineInputBorder(),
+                                ),
+                                items: _segments.entries
+                                    .map(
+                                      (entry) => DropdownMenuItem<String>(
+                                        value: entry.key,
+                                        child: Text(entry.value),
+                                      ),
+                                    )
+                                    .toList(),
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setState(() => _selectedSegment = val);
+                                  }
+                                },
+                              ),
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: _titleController,
+                                decoration: const InputDecoration(
+                                  labelText: 'عنوان التنبيه (مثال: انتهى اشتراكك أو عرض تجديد)',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: _messageController,
+                                maxLines: 3,
+                                decoration: const InputDecoration(
+                                  labelText: 'نص الرسالة الموجهة للفئة',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    'المستهدفون: $activeSegmentCount مستخدم',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  FilledButton.icon(
+                                    onPressed: _sendBulkCampaign,
+                                    icon: const Icon(Icons.send),
+                                    label: const Text('إرسال للفئة'),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      if (_campaignsHistory.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        const Text(
+                          'سجل الرسائل الجماعية المرسلة',
+                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        ..._campaignsHistory.map(
+                          (camp) => Card(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            child: ListTile(
+                              title: Text('${camp.title} (${camp.segmentLabel})'),
+                              subtitle: Text(camp.message),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
+
+          cat << 'EOF' > lib/main.dart
+          import 'package:flutter/material.dart';
+          import 'screens/cashflow_screen.dart';
+          import 'screens/pricing_calculator_screen.dart';
+          import 'screens/subscriptions_summary_screen.dart';
+          import 'screens/developer_admin_screen.dart';
+
+          void main() {
+            runApp(const ProfitGuardApp());
+          }
+
+          class ProfitGuardApp extends StatelessWidget {
+            const ProfitGuardApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: 'مدير الأرباح والمشاريع',
+                debugShowCheckedModeBanner: false,
+                theme: ThemeData(
+                  colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0F766E)),
+                  useMaterial3: true,
+                ),
+                builder: (context, child) {
+                  return Directionality(
+                    textDirection: TextDirection.rtl,
+                    child: child ?? const SizedBox.shrink(),
+                  );
+                },
+                home: const MainNavigationShell(),
+              );
+            }
+          }
+
+          class MainNavigationShell extends StatefulWidget {
+            const MainNavigationShell({super.key});
+
+            @override
+            State<MainNavigationShell> createState() => _MainNavigationShellState();
+          }
+
+          class _MainNavigationShellState extends State<MainNavigationShell> {
+            int _currentIndex = 0;
+
+            final List<Widget> _screens = const [
+              CashflowScreen(),
+              PricingCalculatorScreen(),
+              SubscriptionsSummaryScreen(),
+              DeveloperAdminScreen(),
+            ];
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                body: _screens[_currentIndex],
+                bottomNavigationBar: NavigationBar(
+                  selectedIndex: _currentIndex,
+                  onDestinationSelected: (index) {
+                    setState(() => _currentIndex = index);
+                  },
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(Icons.account_balance_wallet_outlined),
+                      selectedIcon: Icon(Icons.account_balance_wallet),
+                      label: 'السيولة',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.calculate_outlined),
+                      selectedIcon: Icon(Icons.calculate),
+                      label: 'التسعير',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.subscriptions_outlined),
+                      selectedIcon: Icon(Icons.subscriptions),
+                      label: 'الاشتراكات',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.admin_panel_settings_outlined),
+                      selectedIcon: Icon(Icons.admin_panel_settings),
+                      label: 'المطور',
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+          EOF
+
+      - name: Update Gradle and Android build config
+        run: |
+          sed -i 's/distributionUrl=.*/distributionUrl=https\\:\\/\\/services.gradle.org\\/distributions\\/gradle-8.7-all.zip/' android/gradle/wrapper/gradle-wrapper.properties
+          if [ -f android/build.gradle ]; then
+            sed -i "s/com.android.tools.build:gradle:[0-9.]*/com.android.tools.build:gradle:8.3.2/" android/build.gradle
+          fi
+          if [ -f android/settings.gradle ]; then
+            sed -i 's/id "com.android.application" version "[0-9.]*"/id "com.android.application" version "8.3.2"/' android/settings.gradle
+            sed -i 's/id "org.jetbrains.kotlin.android" version "[0-9.]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/' android/settings.gradle
+          fi
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Release APK
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: profit-guard-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
